@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-declare -A aliases=(
-	[1.8]='1 latest'
-	[1.9-rc]='rc'
-)
-
 self="$(basename "$BASH_SOURCE")"
 cd "$(dirname "$(readlink -f "$BASH_SOURCE")")"
 
@@ -45,17 +40,19 @@ dirCommit() {
 
 getArches() {
 	local repo="$1"; shift
-	local officialImagesUrl='https://github.com/docker-library/official-images/raw/master/library/'
+	local officialImagesBase="${BASHBREW_LIBRARY:-https://github.com/docker-library/official-images/raw/HEAD/library}/"
 
-	eval "declare -g -A parentRepoToArches=( $(
-		find -name 'Dockerfile' -exec awk '
+	local parentRepoToArchesStr
+	parentRepoToArchesStr="$(
+		find -name 'Dockerfile' -exec awk -v officialImagesBase="$officialImagesBase" '
 				toupper($1) == "FROM" && $2 !~ /^('"$repo"'|scratch|.*\/.*)(:|$)/ {
-					print "'"$officialImagesUrl"'" $2
+					printf "%s%s\n", officialImagesBase, $2
 				}
 			' '{}' + \
 			| sort -u \
-			| xargs bashbrew cat --format '[{{ .RepoName }}:{{ .TagName }}]="{{ join " " .TagEntry.Architectures }}"'
-	) )"
+			| xargs -r bashbrew cat --format '["{{ .RepoName }}:{{ .TagName }}"]="{{ join " " .TagEntry.Architectures }}"'
+	)"
+	eval "declare -g -A parentRepoToArches=( $parentRepoToArchesStr )"
 }
 getArches 'julia'
 
@@ -74,18 +71,41 @@ join() {
 	echo "${out#$sep}"
 }
 
+declare -A latest=(
+	#[1]='1.9'
+	#[latest]='1.9'
+	#[rc]='1.10-rc'
+)
+
 for version; do
 	export version
+
+	if ! fullVersion="$(jq -er '.[env.version] | if . then .version else empty end' versions.json)"; then
+		continue
+	fi
+
 	variants="$(jq -r '.[env.version].variants | map(@sh) | join(" ")' versions.json)"
 	eval "variants=( $variants )"
-
-	fullVersion="$(jq -r '.[env.version].version' versions.json)"
 
 	versionAliases=(
 		$fullVersion
 		$version
-		${aliases[$version]:-}
 	)
+
+	aliases=()
+	if [ "$version" = "${version%-rc}" ]; then
+		if [[ "$version" =~ [0-9]+[.][0-9]+ ]]; then
+			aliases+=( "${version%%.*}" latest ) # "1", "latest"
+		fi
+	else
+		aliases+=( rc )
+	fi
+	for a in "${aliases[@]}"; do
+		if [ -z "${latest[$a]:-}" ]; then
+			latest[$a]="$version"
+			versionAliases+=( "$a" )
+		fi
+	done
 
 	defaultDebianVariant="$(jq -r '
 		.[env.version].variants
@@ -177,6 +197,9 @@ for version; do
 			GitCommit: $commit
 			Directory: $dir
 		EOE
-		[ -z "$constraints" ] || echo "Constraints: $constraints"
+		[ -z "$constraints" ] || {
+			echo "Constraints: $constraints";
+			echo 'Builder: classic' # no Windows support in BuildKit (yet)
+		}
 	done
 done

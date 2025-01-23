@@ -69,10 +69,11 @@ juliaVersions="$(
 )"
 
 for version in "${versions[@]}"; do
-	export version
+	rcVersion="${version%-rc}"
+	export version rcVersion
 
 	if \
-		! doc="$(jq <<<"$juliaVersions" -c '
+		! doc="$(jq <<<"$juliaVersions" -ce '
 			[ .[] | select(.major == env.version) ][-1]
 		')" \
 		|| ! fullVersion="$(jq <<<"$doc" -r '.version')" \
@@ -84,24 +85,44 @@ for version in "${versions[@]}"; do
 
 	echo "$version: $fullVersion"
 
+	if [ "$rcVersion" != "$version" ] && gaFullVersion="$(jq <<<"$json" -er '.[env.rcVersion] | if . then .version else empty end')"; then
+		# Julia pre-releases have always only been for .0, so if our pre-release now has a relevant GA, it should go away 👀
+		# $ wget -qO- 'https://julialang-s3.julialang.org/bin/versions.json' | jq 'keys_unsorted[]' -r | grep -E '[^0]-'
+		# just in case, we'll also do a version comparison to make sure we don't have a pre-release that's newer than the relevant GA
+		latestVersion="$({ echo "$fullVersion"; echo "$gaFullVersion"; } | sort -V | tail -1)"
+		if [[ "$fullVersion" == "$gaFullVersion"* ]] || [ "$latestVersion" = "$gaFullVersion" ]; then
+			# "x.y.z-rc1" == x.y.z*
+			json="$(jq <<<"$json" -c 'del(.[env.version])')"
+			continue
+		fi
+	fi
+
 	json="$(jq <<<"$json" -c --argjson doc "$doc" '.[env.version] = (
 		$doc
 		| del(.major)
 		| .variants = ([
+			"bookworm",
 			"bullseye",
-			"buster",
 			if .arches | keys | any(startswith("alpine-")) then
-				"3.16",
-				"3.15"
+				"3.21",
+				"3.20",
+				empty
 				| "alpine" + .
 			else empty end,
 			if .arches | has("windows-amd64") then
+				"ltsc2025",
 				"ltsc2022",
-				"1809"
+				"1809",
+				empty
 				| "windows/windowsservercore-" + .
 			else empty end
 		])
 	)')"
+
+	# make sure pre-release versions have a placeholder for GA
+	if [ "$version" != "$rcVersion" ]; then
+		json="$(jq <<<"$json" -c '.[env.rcVersion] //= null')"
+	fi
 done
 
 jq <<<"$json" -S . > versions.json

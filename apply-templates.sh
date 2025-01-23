@@ -32,13 +32,18 @@ for version; do
 
 	rm -rf "$version/"
 
+	if jq -e '.[env.version] | not' versions.json > /dev/null; then
+		echo "deleting $version ..."
+		continue
+	fi
+
 	variants="$(jq -r '.[env.version].variants | map(@sh) | join(" ")' versions.json)"
 	eval "variants=( $variants )"
 
 	for dir in "${variants[@]}"; do
 		mkdir -p "$version/$dir"
 
-		variant="$(basename "$dir")" # "buster", "windowsservercore-1809", etc
+		variant="$(basename "$dir")" # "bookworm", "windowsservercore-1809", etc
 		export variant
 
 		case "$dir" in
